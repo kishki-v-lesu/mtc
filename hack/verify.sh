@@ -43,10 +43,17 @@ check() {
 section "1. Kubernetes-окружение"
 
 check_k8s() {
-    [[ "$(kubectl version -o json | jq -r '.serverVersion.gitVersion')" == "v${KUBERNETES_VERSION}" ]] \
-        || { echo "версия Kubernetes $(kubectl version -o json | jq -r '.serverVersion.gitVersion') != v${KUBERNETES_VERSION}"; return 1; }
+    # На kubeadm-кластере ожидается ровно v${KUBERNETES_VERSION}, на kind — образ
+    # узла публикуется только для .0 патча, поэтому допускается v${KIND_NODE_VERSION}.
+    local want_kubeadm="v${KUBERNETES_VERSION}"
+    local want_kind="v${KIND_NODE_VERSION:-${KUBERNETES_VERSION}}"
+    local got
+    got="$(kubectl version -o json | jq -r '.serverVersion.gitVersion')"
+    [[ "${got}" == "${want_kubeadm}" || "${got}" == "${want_kind}" ]] && return 0
+    echo "версия Kubernetes ${got} не совпадает ни с ${want_kubeadm}, ни с ${want_kind}"
+    return 1
 }
-check "Версия Kubernetes = v${KUBERNETES_VERSION}" check_k8s
+check "Версия Kubernetes = v${KUBERNETES_VERSION} (или v${KIND_NODE_VERSION:-?} на kind)" check_k8s
 
 check_nodes_ready() {
     local notready
@@ -113,8 +120,13 @@ check "CRD Gateway API установлены" check_gw_crd
 
 check_gw_version() {
     local v
+    # Начиная с Gateway API v1.4 bundle-version — аннотация, а не лейбл.
     v="$(kubectl get crd gateways.gateway.networking.k8s.io \
-        -o jsonpath='{.metadata.labels.gateway\.networking\.k8s\.io/bundle-version}')"
+        -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}')"
+    if [[ -z "${v}" ]]; then
+        v="$(kubectl get crd gateways.gateway.networking.k8s.io \
+            -o jsonpath='{.metadata.labels.gateway\.networking\.k8s\.io/bundle-version}')"
+    fi
     [[ "${v}" == "${GATEWAY_API_VERSION}" ]] || { echo "установлена версия ${v}"; return 1; }
 }
 check "Версия Gateway API = ${GATEWAY_API_VERSION}" check_gw_version
@@ -335,11 +347,13 @@ if es_port_forward_start; then
 
     check_es_index_fields() {
         local res
-        res="$(es_query '/nginx-logs-*/_search?size=1' \
-            | jq -r '.hits.hits[0]._source // {} | {service, log_type, request_method, status, request_uri}' 2>/dev/null || true)"
-        [[ "${res}" == *"nginx"* ]] \
-            || { echo "ожидались поля service/log_type в документе, получено: ${res}"; return 1; }
-        log "Пример документа: $(echo "${res}" | tr -d '\n ')"
+        # Забираем самый свежий документ: иначе проверка может посмотреть на
+        # старый индекс, в котором полей ещё нет.
+        res="$(es_query '/nginx-logs-*/_search?size=1&sort=@timestamp:desc' \
+            | jq -c '.hits.hits[0]._source // {} | {service, log_type, request_method, status, request_uri}' 2>/dev/null || true)"
+        echo "${res}" | jq -e '.service.name == "nginx" and .log_type != null' >/dev/null 2>&1 \
+            || { echo "ожидались service.name=nginx и заполненный log_type, получено: ${res:-документ не найден}"; return 1; }
+        log "Пример документа: ${res}"
     }
     check "Access-логи разобраны Filebeat (структурированные поля)" check_es_index_fields
 else

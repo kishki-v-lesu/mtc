@@ -35,9 +35,16 @@ data:
               add_error_key: true
         fields_under_root: true
         fields:
-          service: nginx
+          # service и cluster — объекты в ECS. Если записать их строкой
+          # (service: nginx), Filebeat всё равно отправит свой объект service,
+          # типы конфликтуют, и Elasticsearch отклоняет весь bulk:
+          # "failed to parse field [service] of type [text]".
+          service:
+            name: nginx
+            type: mtc-hack-app
+          cluster:
+            name: mtc-hack
           log_type: access
-          cluster: mtc-hack
 
       # --- Error-логи NGINX: текстовые, отправляем как есть ---
       - type: filestream
@@ -47,15 +54,35 @@ data:
           - /var/log/nginx/error.log
         fields_under_root: true
         fields:
-          service: nginx
+          # service и cluster — объекты в ECS. Если записать их строкой
+          # (service: nginx), Filebeat всё равно отправит свой объект service,
+          # типы конфликтуют, и Elasticsearch отклоняет весь bulk:
+          # "failed to parse field [service] of type [text]".
+          service:
+            name: nginx
+            type: mtc-hack-app
+          cluster:
+            name: mtc-hack
           log_type: error
-          cluster: mtc-hack
 
     # В Kubernetes Filebeat по умолчанию пытается подключиться к API-серверу
     # для метаданных pod'ов. Нам это не нужно — отключаем, чтобы не требовать
     # ServiceAccount с правами и не усложнять развёртывание.
     setup.ilm.enabled: false
     monitoring.enabled: false
+
+    # Имя индекса меняется (nginx-logs-*), поэтому Filebeat требует явного
+    # имени и паттерна шаблона — иначе он завершается с ошибкой
+    # "setup.template.name and setup.template.pattern have to be set
+    # if index name is modified" и уходит в CrashLoopBackOff.
+    #
+    # Паттерн должен покрывать и сам data stream, который Filebeat создаёт
+    # при подключении (имя без даты), и его индексы с датой — отсюда
+    # "nginx-logs*", а не "nginx-logs-*". Иначе Elasticsearch отвечает
+    # "no matching index template found for data stream [nginx-logs]"
+    # и все события отбрасываются.
+    setup.template.name: "nginx-logs"
+    setup.template.pattern: "nginx-logs*"
 
     processors:
       - add_host_metadata:

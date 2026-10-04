@@ -458,15 +458,16 @@ curl -s -H 'Content-Type: application/json' \
 {
   "@timestamp": "2026-10-03T14:21:05+00:00",
   "log_type": "access",
-  "service": "nginx",
+  "service": { "name": "nginx", "type": "mtc-hack-app" },
+  "cluster": { "name": "mtc-hack" },
   "remote_addr": "10.0.0.5",
   "request_method": "GET",
   "request_uri": "/?run=smoke-1750000000&i=17",
-  "host": "10.0.0.10",
+  "nginx_host": "10.0.0.10",
   "status": 200,
   "body_bytes_sent": 13,
   "request_time": "0.001",
-  "user_agent": "curl/8.5.0",
+  "http_user_agent": "curl/8.5.0",
   "request_id": "3f2a...",
   "agent": { "type": "filebeat" }
 }
@@ -474,6 +475,13 @@ curl -s -H 'Content-Type: application/json' \
 
 Поля разделены на `log_type: access` (JSON-логи NGINX, разобранные Filebeat)
 и `log_type: error` (текстовые строки error-лога NGINX, сохраняемые как есть).
+
+Имена полей доступа NGINX — `nginx_host` и `http_user_agent`, а не `host` и
+`user_agent`: в Elasticsearch оба этих имени заняты объектами ECS
+(`host.name`, `user_agent.original`). Строковое значение в корне приводит к
+ошибке `object mapping ... tried to parse field as object`, и все документы
+отбрасываются с `status=400`. По той же причине `service` и `cluster`
+заданы как объекты, а не как строки.
 
 Поиск в UI (опционально):
 

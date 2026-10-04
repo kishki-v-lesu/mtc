@@ -24,17 +24,20 @@ data:
         include       /etc/nginx/mime.types;
         default_type  application/octet-stream;
 
+        # user_agent и host нельзя отдавать строками: в Elasticsearch это
+        # объекты (user_agent.original, host.name), и bulk-индексация падает
+        # с "object mapping ... tried to parse field as object".
         log_format json_combined escape=json
             '{'
                 '"@timestamp":"$time_iso8601",'
                 '"remote_addr":"$remote_addr",'
                 '"request_method":"$request_method",'
                 '"request_uri":"$request_uri",'
-                '"host":"$host",'
+                '"nginx_host":"$host",'
                 '"status":$status,'
                 '"body_bytes_sent":$body_bytes_sent,'
                 '"request_time":$request_time,'
-                '"user_agent":"$http_user_agent",'
+                '"http_user_agent":"$http_user_agent",'
                 '"request_id":"$request_id"'
             '}';
 

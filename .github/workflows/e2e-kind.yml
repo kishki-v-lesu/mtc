@@ -46,8 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           # kind
-          curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" \
-            | sudo install -m 0755 -o /usr/local/bin/kind /dev/stdin
+          curl -fsSL -o /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
           # kubectl — версия из versions.env, чтобы тестировать то же, что разворачиваем
           source versions.env
           KV="${KUBERNETES_VERSION}"
@@ -61,8 +61,10 @@ jobs:
         run: |
           set -euo pipefail
           source versions.env
+          # Образ узла для kind публикуется только для .0 патча минорной версии,
+          # поэтому используем KIND_NODE_VERSION, а не KUBERNETES_VERSION.
           kind create cluster --name mtc-hack --wait 300s \
-            --image "kindest/node:v${KUBERNETES_VERSION}"
+            --image "kindest/node:v${KIND_NODE_VERSION}"
 
       - name: Установить Calico (тот же манифест, что и на kubeadm)
         run: |

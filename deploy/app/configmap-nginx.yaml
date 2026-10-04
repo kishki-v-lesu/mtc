@@ -34,19 +34,26 @@ data:
         default_type  application/octet-stream;
 
         # JSON-формат: Filebeat читает каждую строку как готовый JSON-документ.
+        #
+        # ВАЖНО: имена полей не должны совпадать с ECS-объектами. В Elasticsearch
+        # user_agent и host — объекты (user_agent.original, host.name), поэтому
+        # строковое значение в корне даёт ошибку при bulk-индексации:
+        # "object mapping for [user_agent] tried to parse field [user_agent]
+        # as object, but found a concrete value". Поэтому user_agent и host
+        # записываются под именами http_user_agent и nginx_host.
         log_format json_combined escape=json
             '{'
                 '"@timestamp":"$time_iso8601",'
                 '"remote_addr":"$remote_addr",'
                 '"request_method":"$request_method",'
                 '"request_uri":"$request_uri",'
-                '"host":"$host",'
+                '"nginx_host":"$host",'
                 '"status":$status,'
                 '"body_bytes_sent":$body_bytes_sent,'
                 '"request_length":$request_length,'
                 '"request_time":$request_time,'
                 '"referrer":"$http_referer",'
-                '"user_agent":"$http_user_agent",'
+                '"http_user_agent":"$http_user_agent",'
                 '"request_id":"$request_id"'
             '}';
 

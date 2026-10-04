@@ -159,8 +159,10 @@ es '/nginx-logs-*/_search' -H 'Content-Type: application/json' \
     | jq -r '.aggregations.codes.buckets[]? | "  HTTP \(.key): \(.doc_count)"' || true
 
 log "Распределение по запрошенным путям (поле request_uri):"
+# request_uri маппится как keyword, а не text с подполем .keyword,
+# поэтому агрегируем по самому полю: request_uri.keyword вернул бы пустую выборку.
 es '/nginx-logs-*/_search' -H 'Content-Type: application/json' \
-    -d '{"size":0,"query":{"term":{"log_type":"access"}},"aggs":{"paths":{"terms":{"field":"request_uri.keyword","size":5}}}}' 2>/dev/null \
+    -d '{"size":0,"query":{"term":{"log_type":"access"}},"aggs":{"paths":{"terms":{"field":"request_uri","size":5}}}}' 2>/dev/null \
     | jq -r '.aggregations.paths.buckets[]? | "  \(.key): \(.doc_count)"' || true
 
 log "Последние записи access-лога:"

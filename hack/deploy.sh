@@ -127,10 +127,16 @@ preflight_images
 section "1/6 Gateway API ${GATEWAY_API_VERSION} (channel: ${GATEWAY_API_CHANNEL})"
 GATEWAY_API_URL="${GATEWAY_API_RELEASE_BASE}/${GATEWAY_API_VERSION}/${GATEWAY_API_CHANNEL}-install.yaml"
 
+# Начиная с Gateway API v1.4 bundle-version и channel — аннотации, а не лейблы,
+# поэтому сначала читаем аннотацию, затем лейбл (для совместимости).
 current_bundle="$(
-    kubectl get crd gateways.gateway.networking.k8s.io \
-        -o jsonpath='{.metadata.labels.gateway\.networking\.k8s\.io/bundle-version}' 2>/dev/null || true
+    kubectl get crd gateways.gateway.networking.k8s.io -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}' 2>/dev/null || true
 )"
+if [[ -z "${current_bundle}" ]]; then
+    current_bundle="$(
+        kubectl get crd gateways.gateway.networking.k8s.io -o jsonpath='{.metadata.labels.gateway\.networking\.k8s\.io/bundle-version}' 2>/dev/null || true
+    )"
+fi
 
 if [[ "${current_bundle}" == "${GATEWAY_API_VERSION}" ]]; then
     ok "CRD Gateway API ${GATEWAY_API_VERSION} уже установлены. Пропускаем."
@@ -153,30 +159,22 @@ else
     ok "CRD Gateway API установлены."
 fi
 
+# --- Вспомогательные функции Helm ---
+source "${REPO_ROOT}/hack/lib_helm.sh"
+
 # --- NGINX Gateway Fabric -------------------------------------------------------
 section "2/6 NGINX Gateway Fabric ${NGF_CHART_VERSION} (Gateway API implementation)"
 
-# --wait несовместим с --dry-run, поэтому флаг ожидания добавляется только
-# при реальном развёртывании. Массив вместо строки — чтобы аргументы с [] и {}
-# не разбирались оболочкой.
-helm_args=(
-    upgrade --install "${NGF_RELEASE_NAME}"
-    "${NGF_CHART_REPO}"
-    --version "${NGF_CHART_VERSION}"
-    --namespace "${GATEWAY_NAMESPACE}"
-    --create-namespace
-    --values "${REPO_ROOT}/helm-values/nginx-gateway-fabric.yaml"
-    --timeout "${TIMEOUT}"
-    # nodePorts передаём целиком (port + listenerPort): при передаче только
-    # --set nginx.service.nodePorts[0].port=... Helm заменил бы весь список
-    # и потерял listenerPort, а NGINX Gateway Fabric игнорирует NodePort,
-    # не сопоставленный с портом listener'а.
-    --set "nginx.service.nodePorts[0].port=${APP_NODEPORT}"
+# Вместо прямого вызова helm используем идемпотентную обертку
+helm_upgrade_idempotent \
+    "${NGF_RELEASE_NAME}" \
+    "${GATEWAY_NAMESPACE}" \
+    "${NGF_CHART_REPO}" \
+    "${NGF_CHART_VERSION}" \
+    "${REPO_ROOT}/helm-values/nginx-gateway-fabric.yaml" \
+    --set "nginx.service.nodePorts[0].port=${APP_NODEPORT}" \
     --set "nginx.service.nodePorts[0].listenerPort=${NGF_LISTENER_PORT}"
-)
-[[ "${DRY_RUN}" == "true" ]] && helm_args+=(--dry-run=client) || helm_args+=(--wait)
 
-helm "${helm_args[@]}"
 ok "NGINX Gateway Fabric установлен в namespace ${GATEWAY_NAMESPACE}."
 
 # ВНИМАНИЕ: сам Helm-чарт NGINX Gateway Fabric 2.x НЕ создаёт data plane.
@@ -212,20 +210,15 @@ else
 
     helm repo add prometheus-community "${KPS_CHART_REPO}" --force-update >/dev/null 2>&1 || true
     helm repo update prometheus-community >/dev/null 2>&1 || true
-
-    kps_args=(
-        upgrade --install "${KPS_RELEASE_NAME}" prometheus-community/kube-prometheus-stack
-        --version "${KPS_CHART_VERSION}"
-        --namespace "${MONITORING_NAMESPACE}"
-        --create-namespace
-        --values "${REPO_ROOT}/helm-values/kube-prometheus-stack.yaml"
-        --timeout "${TIMEOUT}"
+    
+    helm_upgrade_idempotent \
+        "${KPS_RELEASE_NAME}" \
+        "${MONITORING_NAMESPACE}" \
+        "${KPS_CHART_REPO}" \
+        "${KPS_CHART_VERSION}" \
+        "${REPO_ROOT}/helm-values/kube-prometheus-stack.yaml" \
         --set-string "grafana.adminPassword=${GRAFANA_ADMIN_PASSWORD}"
-    )
-    [[ "${DRY_RUN}" == "true" ]] && kps_args+=(--dry-run=client) || kps_args+=(--wait)
-
-    helm "${kps_args[@]}"
-
+    
     ok "Prometheus и Grafana установлены в namespace ${MONITORING_NAMESPACE}."
 fi
 
@@ -340,11 +333,17 @@ fi
 # --- Итог -----------------------------------------------------------------------
 section "6/6 Готово"
 GATEWAY_IP="$(gateway_access_ip || true)"
+# Фактическая версия сервера: на kind она отличается от KUBERNETES_VERSION,
+# потому что образ узла kind не публикуется на каждый патч Kubernetes.
+SERVER_K8S_VERSION="$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion' 2>/dev/null || true)"
+if [[ -z "${SERVER_K8S_VERSION}" || "${SERVER_K8S_VERSION}" == "null" ]]; then
+  SERVER_K8S_VERSION="${KUBERNETES_VERSION}"
+fi
 
 cat <<EOF
 $(ok "Решение развёрнуто.")
 
-  Kubernetes:    ${KUBERNETES_VERSION}
+  Kubernetes:    ${SERVER_K8S_VERSION}
   Gateway API:   ${GATEWAY_API_VERSION}
   Реализация:    NGINX Gateway Fabric ${NGF_CHART_VERSION}
   Приложение:    3 реплики NGINX + exporter + Filebeat

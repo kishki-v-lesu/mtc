@@ -321,7 +321,19 @@ nginx пишет JSON в emptyDir
 
 Два входа: `access.log` разбирается в поля (`status`, `request_uri`,
 `request_time`, ...), `error.log` сохраняется как текст. Оба помечаются
-полями `service: nginx` и `log_type: access|error`.
+объектами `service: {name: nginx, type: mtc-hack-app}` и
+`log_type: access|error`.
+
+Имена полей, которые NGINX отдаёт в JSON, не должны совпадать с
+ECS-объектами: `host` и `user_agent` в Elasticsearch уже заняты объектами
+(`host.name`, `user_agent.original`). Поэтому используются `nginx_host` и
+`http_user_agent`, а `service` и `cluster` заданы объектами, а не строками.
+Иначе Elasticsearch отклоняет весь bulk с
+`object mapping for [...] tried to parse field ... as object, but found a
+concrete value` (HTTP 400), и индекс остаётся пустым при исправно
+работающем Filebeat. По той же причине `setup.template.pattern` задан как
+`nginx-logs*`: он должен покрывать и создаваемый Filebeat data stream, и его
+индексы с датой.
 
 ### 5.3. Метрики
 
