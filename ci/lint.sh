@@ -25,10 +25,28 @@ while IFS= read -r script; do
     fi
 done < <(find "${REPO_ROOT}/hack" "${REPO_ROOT}/ci" -name '*.sh' -type f | sort)
 
-# Проверяем, что все скрипты помечены как исполняемые
+# Проверяем, что все скрипты помечены как исполняемые.
+# Проверять бит в индексе git, а не [[ -x ]] в файловой системе: на Windows и в
+# MSYS любой .sh выглядит исполняемым, поэтому локально проверка проходит, а
+# на Linux-раннере падает и роняет весь CI.
 step "Права на исполнение"
+IN_GIT_REPO=false
+if git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
+    IN_GIT_REPO=true
+fi
 while IFS= read -r script; do
-    if [[ -x "${script}" ]]; then
+    rel="${script#"${REPO_ROOT}"/}"
+    if [[ "${IN_GIT_REPO}" == "true" ]]; then
+        mode="$(git -C "${REPO_ROOT}" ls-files -s -- "${rel}" | awk '{print $1}')"
+        if [[ "${mode}" == "100755" ]]; then
+            pass "$(basename "${script}") executable (в git)"
+        elif [[ -z "${mode}" ]]; then
+            fail "$(basename "${script}") не отслеживается git"
+        else
+            fail "$(basename "${script}"): в git режим ${mode}, нужен 100755"
+            fail "  исправление: git update-index --chmod=+x ${rel} && git commit -m 'Make script executable'"
+        fi
+    elif [[ -x "${script}" ]]; then
         pass "$(basename "${script}") executable"
     else
         fail "$(basename "${script}") не имеет бита +x"
