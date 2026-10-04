@@ -1,0 +1,188 @@
+---
+# Конфигурация NGINX для canary-версии приложения.
+# Отличается только телом ответа — это позволяет эксперту увидеть,
+# какому backend'у был направлен конкретный запрос.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-canary-nginx-config
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web-canary
+    app.kubernetes.io/part-of: mtc-hack
+data:
+  nginx.conf: |
+    worker_processes  auto;
+    pid               /tmp/nginx.pid;
+    error_log         /var/log/nginx/error.log warn;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format json_combined escape=json
+            '{'
+                '"@timestamp":"$time_iso8601",'
+                '"remote_addr":"$remote_addr",'
+                '"request_method":"$request_method",'
+                '"request_uri":"$request_uri",'
+                '"host":"$host",'
+                '"status":$status,'
+                '"body_bytes_sent":$body_bytes_sent,'
+                '"request_time":$request_time,'
+                '"user_agent":"$http_user_agent",'
+                '"request_id":"$request_id"'
+            '}';
+
+        access_log  /var/log/nginx/access.log  json_combined;
+
+        sendfile      on;
+        server_tokens off;
+
+        server {
+            listen      8080 default_server;
+            server_name _;
+
+            location / {
+                default_type text/plain;
+                add_header X-Served-By "mtc-hack-web-canary" always;
+                return 200 "Hello World! (canary)\n";
+            }
+
+            location = /healthz {
+                access_log off;
+                default_type text/plain;
+                return 200 "ok\n";
+            }
+
+            location = /nginx_status {
+                access_log off;
+                stub_status;
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-canary
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web-canary
+    app.kubernetes.io/component: app
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web-canary
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: web-canary
+        app.kubernetes.io/component: app
+        app.kubernetes.io/part-of: mtc-hack
+    spec:
+      serviceAccountName: web
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.29.4-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["nginx"]
+          args: ["-g", "daemon off;"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: nginx-logs
+              mountPath: /var/log/nginx
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: web-canary-nginx-config
+            defaultMode: 0444
+        - name: nginx-logs
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+        - name: nginx-cache
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-canary
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web-canary
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: web-canary
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

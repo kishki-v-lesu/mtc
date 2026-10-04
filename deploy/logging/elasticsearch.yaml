@@ -1,0 +1,165 @@
+---
+# Elasticsearch — централизованное хранилище логов приложения.
+#
+# Одиночный узел (single-node) для стенда. Ограничения и план развития
+# описаны в README, раздел «Известные ограничения».
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/part-of: mtc-hack
+data:
+  elasticsearch.yml: |
+    cluster.name: mtc-hack-logs
+    node.name: es-01
+    discovery.type: single-node
+
+    # Без аутентификации: стенд изолирован (NetworkPolicy ограничивает доступ
+    # к порту 9200 только подами приложения). Включение TLS и basic-auth
+    # описано в README.
+    xpack.security.enabled: false
+    xpack.security.http.ssl.enabled: false
+    xpack.security.transport.ssl.enabled: false
+
+    # Не блокируем запуск из-за mmap: лимит выставлен в 00-prepare-node.sh
+    bootstrap.memory_lock: false
+
+    # Отключаем загрузку GeoIP-базы: не требует доступа в интернет.
+    ingest.geoip.downloader.enabled: false
+
+    network.host: 0.0.0.0
+    http.port: 9200
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: elasticsearch-data
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  replicas: 1
+  strategy:
+    # Один узел: rolling update выведит из строя единственный экземпляр
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch
+        app.kubernetes.io/component: logging
+        app.kubernetes.io/part-of: mtc-hack
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 0
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Долгий старт: JVM + bootstrap-проверки занимают до 2 минут
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ES_JAVA_OPTS
+              value: "-Xms1g -Xmx1g"
+          ports:
+            - name: http
+              containerPort: 9200
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /_cluster/health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?wait_for_status=yellow&timeout=5s
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_cluster/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: elasticsearch-config
+              mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+              subPath: elasticsearch.yml
+              readOnly: true
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: elasticsearch-config
+          configMap:
+            name: elasticsearch-config
+            defaultMode: 0444
+        - name: data
+          persistentVolumeClaim:
+            claimName: elasticsearch-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,30 @@
+---
+# Namespace для демонстрационного приложения, Gateway и хранилища логов.
+# Помечаем standard-метками, чтобы NetworkPolicy мог ссылаться на них
+# через namespaceSelector kubernetes.io/metadata.name.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+    # enforce: baseline — жёсткое ограничение, которое не отвергнет ни один pod
+    # решения. warn/audit: restricted — Pod Security Admission подсвечивает
+    # предупреждения, если pod не соответствует самым строгим требованиям.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Namespace control plane NGINX Gateway Fabric и data plane.
+#
+# Обычно его создаёт Helm (helm install --create-namespace), но мы объявляем
+# его явно, чтобы `kubectl apply -k deploy/gateway` работал и без чарта.
+# Pod Security Admission здесь намеренно НЕ включаем: namespace принадлежит
+# NGINX Gateway Fabric, и чужие pod security-ограничения не должны ломать
+# его развёртывание. Собственные поды решения (mtc-demo) ограничены выше.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nginx-gateway
+  labels:
+    app.kubernetes.io/part-of: mtc-hack

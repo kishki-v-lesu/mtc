@@ -1,0 +1,17 @@
+---
+# PodDisruptionBudget: при плановом обслуживании (например, kubectl drain)
+# всегда остаётся минимум 2 из 3 доступных pod'ов приложения.
+# Тем самым запросы через Gateway не теряют доступность при обслуживании.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web

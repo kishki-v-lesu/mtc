@@ -1,0 +1,220 @@
+---
+# Дашборд Grafana. Подхватывается sidecar'ом kube-prometheus-stack
+# по метке grafana_dashboard: "1".
+#
+# Панели используют метрики, которые гарантированно собираются в этом решении:
+#   nginx_http_requests_total  — счётчик запросов NGINX (nginx-prometheus-exporter);
+#   nginx_connections_active   — активные соединения NGINX;
+#   up                         — доступность всех scrape-таргетов Prometheus;
+#   node_cpu_seconds_total     — загрузка CPU узлов (node-exporter);
+#   node_memory_MemAvailable_bytes — свободная память узлов;
+#   kube_pod_status_ready      — готовность pod'ов (kube-state-metrics).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-web
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+    grafana_dashboard: "1"
+data:
+  mtc-hack-web.json: |
+    {
+      "uid": "mtc-hack-web",
+      "title": "MTC Engineer Hack — Web Application",
+      "tags": ["mtc-hack", "nginx", "kubernetes"],
+      "timezone": "browser",
+      "editable": true,
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "label": "Источник данных",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {},
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "refresh": 1,
+            "skipUrlSync": false
+          },
+          {
+            "name": "namespace",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "${datasource}" },
+            "query": "label_values(up, namespace)",
+            "includeAll": true,
+            "multi": true,
+            "current": { "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Доступность приложения (nginx_up)",
+          "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(nginx_up{namespace=\"$namespace\"})",
+              "legendFormat": "подов в работе"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": { "text": "Нет", "color": "red" },
+                    "1": { "text": "Да", "color": "green" }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Всего запросов к NGINX",
+          "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(nginx_http_requests_total{namespace=\"$namespace\"})",
+              "legendFormat": "запросов"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short", "decimals": 0 },
+            "overrides": []
+          }
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Активные соединения NGINX",
+          "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(nginx_connections_active{namespace=\"$namespace\"})",
+              "legendFormat": "соединений"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short" },
+            "overrides": []
+          }
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Готовые pod'ы в mtc-demo",
+          "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_pod_status_ready{namespace=\"$namespace\", condition=\"true\"})",
+              "legendFormat": "готовых pod'ов"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short" },
+            "overrides": []
+          }
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Запросы в секунду (по экземплярам)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (pod) (rate(nginx_http_requests_total{namespace=\"$namespace\"}[2m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Состояния scrape-таргетов Prometheus",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "up{namespace=\"$namespace\"}",
+              "legendFormat": "{{job}} / {{pod}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": { "text": "DOWN", "color": "red" },
+                    "1": { "text": "UP", "color": "green" }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "CPU узлов",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+              "legendFormat": "{{instance}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "percent", "min": 0, "max": 100 },
+            "overrides": []
+          }
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Свободная память узлов",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "node_memory_MemAvailable_bytes",
+              "legendFormat": "{{instance}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "bytes" },
+            "overrides": []
+          }
+        }
+      ]
+    }

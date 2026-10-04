@@ -1,0 +1,23 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - app
+  - canary
+  - gateway
+  - logging
+  - monitoring
+  - security
+
+# kibana развёртывается отдельной командой:
+#   kubectl apply -k deploy/logging-kibana
+# и намеренно не включён в путь по умолчанию, чтобы не увеличивать
+# требования к памяти стенда.
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: mtc-hack
+      app.kubernetes.io/managed-by: kustomize

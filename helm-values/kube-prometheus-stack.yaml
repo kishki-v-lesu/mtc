@@ -1,0 +1,151 @@
+---
+# =============================================================================
+# Values для kube-prometheus-stack (prometheus-community) 91.9.0
+#
+# Чарт устанавливается командой:
+#   helm upgrade --install kube-prometheus-stack \
+#     prometheus-community/kube-prometheus-stack --version 91.9.0 \
+#     -f helm-values/kube-prometheus-stack.yaml
+#
+# Из полного стека оставлено только необходимое и полезное для решения:
+# Prometheus, Grafana, node-exporter, kube-state-metrics.
+# Alertmanager отключён — в задании он не требуется.
+# =============================================================================
+
+crds:
+  enabled: true
+
+alertmanager:
+  enabled: false
+
+# -----------------------------------------------------------------------------
+# Grafana
+# -----------------------------------------------------------------------------
+grafana:
+  enabled: true
+  # ClusterIP + port-forward: не требует внешнего балансировщика.
+  service:
+    type: ClusterIP
+  adminUser: admin
+  # adminPassword НЕ хранится в репозитории.
+  # hack/deploy.sh генерирует случайный пароль, передаёт его через --set
+  # и сохраняет локально в .secrets/ (каталог в .gitignore).
+  adminPassword: ""
+  defaultDashboardsEnabled: false
+  defaultDashboardsTimezone: utc
+  forceSslPassword: false
+  # Sidecar автоматически подхватывает ConfigMap'ы с меткой grafana_dashboard: "1"
+  # (в том числе наш дашборд из deploy/monitoring/grafana-dashboard.yaml).
+  sidecar:
+    dashboards:
+      enabled: true
+      provider:
+        foldersFromFilesStructure: false
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# Prometheus
+# -----------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    retention: 24h
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+
+    # ВАЖНО: по умолчанию чарт выбирает только ServiceMonitor'ы с меткой
+    # release=<имя релиза>. Обнуляем селекторы, чтобы Prometheus собирал
+    # метрики всех наших ServiceMonitor'ов (в том числе в других namespace).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
+
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+    # Данные Prometheus — во временном томе: для стенда достаточно,
+    # в README описано, как подключить постоянное хранилище.
+    storageSpec: {}
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+
+  # Секреты (TLS-сертификаты для веб-интерфейса и вебхуков) выключены:
+  # Prometheus в этой схеме доступен только через port-forward.
+  server:
+    enabled: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 100Mi
+    limits:
+      cpu: 300m
+      memory: 300Mi
+
+# -----------------------------------------------------------------------------
+# Экспортёры: CPU/RAM узлов и состояние объектов Kubernetes
+# -----------------------------------------------------------------------------
+nodeExporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+kubeStateMetrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+kubeApiServer:
+  enabled: true
+kubelet:
+  enabled: true
+  serviceMonitor:
+    # На kubeadm есть статический TLS-сертификат API-сервера;
+    # используем insecure-вариант, чтобы не управлять сертификатами.
+    insecureSkipVerify: true
+controllerManager:
+  enabled: true
+  endpoints:
+    enabled: true
+    httpsInsecure: true
+scheduler:
+  enabled: true
+  endpoints:
+    enabled: true
+    httpsInsecure: true
+etcd:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+defaultRules:
+  create: false

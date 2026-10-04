@@ -1,0 +1,25 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-gateway-fabric
+  namespace: nginx-gateway
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+    # Метка, которую выбирает Prometheus kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - nginx-gateway
+  # Метка observability добавлена нами в helm-values/nginx-gateway-fabric.yaml
+  # (nginxGateway.service.labels). Так ServiceMonitor не зависит от имени
+  # Helm-релиза и от шаблонов самого чарта.
+  selector:
+    matchLabels:
+      observability: mtc-hack
+  endpoints:
+    - port: metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      path: /metrics

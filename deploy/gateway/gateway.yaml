@@ -1,0 +1,118 @@
+---
+# Gateway API. Доступ к приложению организован через Gateway-ресурс.
+#
+# GatewayClass с именем "nginx" создаёт Helm-чарт NGINX Gateway Fabric
+# (см. helm-values/nginx-gateway-fabric.yaml, ключ nginxGateway.gatewayClassName),
+# поэтому здесь он не дублируется: два ресурса с одним именем конфликтовали бы.
+#
+# Gateway слушает HTTP на порту 80 и разрешает трафик из всех namespace.
+#
+# ВАЖНО: Gateway намеренно живёт в namespace nginx-gateway, а не рядом
+# с приложением. NGINX Gateway Fabric разворачивает data plane (Pods NGINX и
+# Service с NodePort) в namespace ресурса Gateway — выбрать другой нельзя:
+# в CRD NginxProxy поля spec.kubernetes.namespace не существует.
+# Разместив Gateway здесь, мы получаем три согласованных эффекта:
+#   * data plane попадает в nginx-gateway, где нет наших NetworkPolicy
+#     (в mtc-demo default-deny-all заблокировал бы ему egress к приложению);
+#   * NodePort Service находится там же, где его ищет hack/deploy.sh;
+#   * ingress-политики приложения уже разрешают трафик из namespace
+#     nginx-gateway (см. deploy/security/networkpolicy.yaml).
+# HTTPRoute при этом остаются в mtc-demo: allowedRoutes.namespaces.from: All
+# разрешает подключать маршрут к шлюзу из другого namespace, а backendRefs
+# резолвятся в namespace самого маршрута, поэтому ReferenceGrant не нужен.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: web-gateway
+  namespace: nginx-gateway
+  labels:
+    app.kubernetes.io/name: web-gateway
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  gatewayClassName: nginx
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+# ---------------------------------------------------------------------------
+# HTTPRoute №1 — основной маршрут.
+#
+# Hostname намеренно НЕ задан, чтобы маршрут срабатывал при любом Host,
+# в том числе при обращении по IP узла (curl http://<NODE_IP>:30080/).
+#
+# Реализовано:
+#   * маршрутизация по path: /canary -> canary-backend;
+#   * traffic splitting: 90% трафика на стабильный backend, 10% на canary.
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-route
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web-route
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  parentRefs:
+    - name: web-gateway
+      namespace: nginx-gateway
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /canary
+      backendRefs:
+        - name: web-canary
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web
+          port: 80
+          weight: 90
+        - name: web-canary
+          port: 80
+          weight: 10
+---
+# ---------------------------------------------------------------------------
+# HTTPRoute №2 — маршрутизация по hostname.
+#
+# Срабатывает только при Host: web.mtc.local и направляет 100% трафика
+# на стабильный backend. Это делает hostname-маршрутизацию проверяемой:
+#
+#   curl -H 'Host: web.mtc.local' http://<NODE_IP>:30080/   -> всегда стабильный backend
+#   curl                       http://<NODE_IP>:30080/       -> 90/10 traffic splitting
+#
+# По правилам приоритета Gateway API маршрут с более специфичным hostname
+# выигрывает у маршрута без ограничения по hostname.
+# ---------------------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-hostname-route
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web-hostname-route
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  parentRefs:
+    - name: web-gateway
+      namespace: nginx-gateway
+      sectionName: http
+  hostnames:
+    - "web.mtc.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web
+          port: 80

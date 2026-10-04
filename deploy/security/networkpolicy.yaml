@@ -1,0 +1,173 @@
+---
+# Базовый запрет: любой входящий и исходящий трафик внутри namespace запрещён.
+# Ниже идут точечные исключения. Требует CNI с поддержкой NetworkPolicy
+# (в этом решении — Calico).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Разрешаем DNS для всех pod'ов namespace: без этого name-resolution не работает.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Входящий трафик к приложению:
+#   * с порта 8080 — от data plane NGINX Gateway Fabric (namespace nginx-gateway);
+#   * с порта 9113 — от Prometheus (namespace monitoring);
+#   * с любых портов — от pod'ов самого namespace (внутренние проверки).
+# Исходящий трафик приложения:
+#   * на порт 9200 — к Elasticsearch (отправка логов из Filebeat);
+#   * DNS разрешается правилом allow-dns-egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-traffic
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nginx-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9113
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+# Входящий трафик к canary-реплике приложения.
+# Отдельная политика обязательна: podSelector политики allow-web-traffic
+# выбирает только app.kubernetes.io/name=web, поэтому без неё canary остался бы
+# под default-deny-all и был недоступен из шлюза — traffic splitting не работал бы.
+# Метрик-порт не открываем: экспортера у canary нет.
+# Исходящий трафик запрещён политикой default-deny-all: canary ничего не запрашивает.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-canary-traffic
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: web-canary
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: nginx-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - podSelector: {}
+---
+# Входящий трафик к Elasticsearch разрешён только от pod'ов приложения.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elasticsearch-traffic
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: web
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+# Опциональный Kibana (подключается через `make kibana`; каталог
+# deploy/logging-kibana не входит в путь развёртывания по умолчанию).
+# Политика описана здесь, чтобы при ручном `kubectl apply -k deploy/logging-kibana`
+# поды не оказались под default-deny-all и не потеряли связь с Elasticsearch.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kibana-traffic
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kibana
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 5601
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch
+      ports:
+        - protocol: TCP
+          port: 9200

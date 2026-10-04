@@ -1,0 +1,58 @@
+---
+# ServiceMonitor: Prometheus автоматически обнаруживает exporter приложения
+# и начинает собирать метрики NGINX.
+# Требует CRD ServiceMonitor (устанавливается kube-prometheus-stack).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: web
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: mtc-hack
+    # Метка, которую выбирает Prometheus kube-prometheus-stack
+    # (serviceMonitorSelector в нашем values-файле пустой, поэтому работает и без неё).
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - mtc-demo
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      path: /metrics
+      relabelings:
+        # Метрики по каждому pod'у: видно, что сеть доставляет запросы
+        # на все экземпляры, а не только на один.
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+---
+# PodMonitor собирает метрики напрямую с pod'ов приложения: так в Prometheus
+# попадает и exporter, и любые будущие /metrics-эндпоинты контейнеров.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: web-pods
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: mtc-hack
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - mtc-demo
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

@@ -1,0 +1,29 @@
+---
+# Шаблон конфигурации для присоединения worker-узла.
+# Используется скриптом 02-join-worker.sh, который подставляет значения
+# вместо плейсхолдеров и передаёт файл в `kubeadm join`.
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    # Подставляется как есть: скрипт передаёт endpoint уже с портом
+    # (например 10.0.0.10:6443 или [fd00::1]:6443).
+    apiServerEndpoint: "__API_SERVER_ENDPOINT__"
+    token: "__JOIN_TOKEN__"
+    caCertHashes:
+      - "__CA_CERT_HASH__"
+nodeRegistration:
+  name: "__NODE_NAME__"
+  criSocket: unix:///run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  kubeletExtraArgs:
+    - name: node-ip
+      value: "__NODE_IP__"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+rotateCertificates: true
+serverTLSBootstrap: true
+failSwapOn: true
+imageGCHighThresholdPercent: 85
+imageGCLowThresholdPercent: 80

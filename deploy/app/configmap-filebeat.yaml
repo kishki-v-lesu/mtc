@@ -1,0 +1,86 @@
+---
+# Конфигурация Filebeat — агента сбора логов приложения.
+#
+# Работает как sidecar-контейнер рядом с NGINX и читает access/error-логи
+# из общей emptyDir-тома. Отправляет документы в Elasticsearch.
+#
+# Почему sidecar, а не DaemonSet на узле: логи NGINX пишутся в файл внутри
+# контейнера, а не в stdout, поэтому node-level сборщик на хосте их не увидит
+# без монтирования hostPath (что ломает работу на нескольких узлах).
+# Ограничение подхода и план развития описаны в README.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: mtc-hack
+data:
+  filebeat.yml: |
+    # Секреты в репозитории отсутствуют: адрес Elasticsearch передаётся
+    # через переменную окружения (см. env в Deployment).
+    filebeat.inputs:
+      # --- Access-логи NGINX в формате JSON (log_format json_combined) ---
+      - type: filestream
+        id: web-nginx-access
+        enabled: true
+        paths:
+          - /var/log/nginx/access.log
+        parsers:
+          - ndjson:
+              target: ""
+              overwrite_keys: true
+              add_error_key: true
+        fields_under_root: true
+        fields:
+          service: nginx
+          log_type: access
+          cluster: mtc-hack
+
+      # --- Error-логи NGINX: текстовые, отправляем как есть ---
+      - type: filestream
+        id: web-nginx-error
+        enabled: true
+        paths:
+          - /var/log/nginx/error.log
+        fields_under_root: true
+        fields:
+          service: nginx
+          log_type: error
+          cluster: mtc-hack
+
+    # В Kubernetes Filebeat по умолчанию пытается подключиться к API-серверу
+    # для метаданных pod'ов. Нам это не нужно — отключаем, чтобы не требовать
+    # ServiceAccount с правами и не усложнять развёртывание.
+    setup.ilm.enabled: false
+    monitoring.enabled: false
+
+    processors:
+      - add_host_metadata:
+          when.not.contains:
+            tags: forwarded
+      # Намеренно не используем add_cloud_metadata: на стенде в VirtualBox/VMware
+      # обращение к metadata endpoint зависает на несколько секунд.
+      - drop_fields:
+          fields: ["agent.ephemeral_id", "log.offset"]
+          ignore_missing: true
+
+    output.elasticsearch:
+      hosts: ["${ES_HOST}"]
+      # Явный индекс: шаблон и ILM отключены, чтобы данные шли в предсказуемое место.
+      index: "nginx-logs-%{+yyyy.MM.dd}"
+      bulk_max_size: 50
+      # Небольшой таймаут — в стенде сеть локальная.
+      timeout: 10
+
+    # Файловый вывод остаётся включённым как страховка: если Elasticsearch
+    # недоступен, логи не теряются молча.
+    logging.level: info
+    logging.to_files: false
+
+    queue.mem:
+      events: 4096
+      flush.min_events: 512
+      flush.timeout: 5s

@@ -1,0 +1,130 @@
+---
+# Kibana — веб-интерфейс для поиска по собранным логам.
+#
+# НЕ входит в путь развёртывания по умолчанию: добавляет ~1 ГБ оперативной
+# памяти. Включается отдельной командой (см. README и Makefile):
+#
+#   kubectl apply -k deploy/logging-kibana
+#
+# Data volume не используется: индексы читаются напрямую из Elasticsearch.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: mtc-hack
+data:
+  kibana.yml: |
+    server.name: kibana
+    server.host: "0.0.0.0"
+    server.port: 5601
+    elasticsearch.hosts: ["http://elasticsearch:9200"]
+    monitoring.ui.container.elasticsearch.enabled: true
+    # На стенде не используем service tokens и шифрование.
+    xpack.security.enabled: false
+    xpack.encryptedSavedObjects.enabled: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kibana
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/component: logging
+        app.kubernetes.io/part-of: mtc-hack
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 0
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:9.5.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ELASTICSEARCH_HOSTS
+              value: '["http://elasticsearch:9200"]'
+          ports:
+            - name: http
+              containerPort: 5601
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          startupProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 10
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: kibana-config
+              mountPath: /usr/share/kibana/config/kibana.yml
+              subPath: kibana.yml
+              readOnly: true
+      volumes:
+        - name: kibana-config
+          configMap:
+            name: kibana-config
+            defaultMode: 0444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kibana
+  ports:
+    - name: http
+      port: 5601
+      targetPort: http
+      protocol: TCP

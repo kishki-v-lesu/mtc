@@ -1,0 +1,46 @@
+---
+# Service для трафика приложения.
+# Порт Service — 80, targetPort — 8080 (NGINX слушает непривилегированный порт).
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+# Service для сбора метрик: Prometheus опрашивает nginx-prometheus-exporter.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-metrics
+  namespace: mtc-demo
+  labels:
+    app.kubernetes.io/name: web
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: mtc-hack
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: metrics
+      port: 9113
+      targetPort: metrics
+      protocol: TCP
+# Внутренние метрики самого Filebeat (:5066) намеренно не выведены в Service.
+# В filebeat.yml стоит monitoring.enabled: false, поэтому на этом порту никто
+# не слушает, и Service существовал бы без единого эндпоинта. Включение
+# мониторинга конвейера логов вынесено в раздел «Развитие решения» в README.

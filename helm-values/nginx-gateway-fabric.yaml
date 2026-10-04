@@ -1,0 +1,100 @@
+---
+# =============================================================================
+# Values для Helm-чарта NGINX Gateway Fabric 2.7.2
+#   oci://ghcr.io/nginx/charts/nginx-gateway-fabric
+#
+# Чарт устанавливается командой:
+#   helm upgrade --install ngf oci://ghcr.io/nginx/charts/nginx-gateway-fabric \
+#     --version 2.7.2 -f helm-values/nginx-gateway-fabric.yaml
+#
+# ВАЖНО: чарт сам создаёт GatewayClass с именем из nginxGateway.gatewayClassName.
+# Поэтому отдельный манифест GatewayClass в репозитории отсутствует —
+# иначе возник бы конфликт ресурсов.
+# =============================================================================
+
+nginxGateway:
+  # Имя GatewayClass, которое создаёт чарт. На него ссылается наш Gateway.
+  gatewayClassName: nginx
+
+  # Телеметрия в NGINX One выключена: решение не должно никуда отправлять
+  # данные о своём использовании.
+  productTelemetry:
+    enable: false
+
+  # Метрики control plane — их собирает наш ServiceMonitor
+  # (deploy/monitoring/servicemonitor-gateway.yaml).
+  metrics:
+    enable: true
+    port: 9113
+    secure: false
+
+  service:
+    # Метка, по которой наш ServiceMonitor находит этот Service.
+    # Так ServiceMonitor не зависит от имени Helm-релиза и шаблонов чарта.
+    labels:
+      observability: mtc-hack
+
+  # Leader election: несколько replica'ов control plane не будут драться
+  # за статус Gateway-ресурсов.
+  leaderElection:
+    enable: true
+
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Диагностика собирается только на уровне info, чтобы не раздувать логи.
+  config:
+    logging:
+      level: info
+
+# -----------------------------------------------------------------------------
+# Data plane (NGINX, который терминирует трафик)
+# -----------------------------------------------------------------------------
+nginx:
+  # Два экземпляра data plane: переживает падение одного пода.
+  replicas: 2
+
+  service:
+    # NodePort — единственный тип, который работает на «голом» kubeadm-кластере
+    # без облачного балансировщика. LoadBalancer потребовал бы MetalLB.
+    type: NodePort
+    # Cluster (а не Local) — тогда NodePort работает на ЛЮБОМ узле кластера,
+    # даже если на нём нет подов NGINX.
+    externalTrafficPolicy: Cluster
+    # port        -> NodePort, назначаемый Service
+    # listenerPort -> порт listener'а в нашем Gateway
+    nodePorts:
+      - port: 30080
+        listenerPort: 80
+
+  config:
+    # Включаем endpoint метрик NGINX (для будущего PodMonitor'а data plane).
+    metrics:
+      disable: false
+    # JSON-экранирование access-логов самого шлюза.
+    accessLog:
+      escape: json
+    logging:
+      errorLevel: warn
+      agentLevel: error
+    # Не отдавать версию NGINX в заголовках.
+    serverTokens: "off"
+
+  container:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# Генерация сертификатов для NGINX Agent — необходима для работы control plane.
+certGenerator:
+  enable: true

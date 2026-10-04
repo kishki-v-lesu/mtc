@@ -1,0 +1,64 @@
+# =============================================================================
+# Шаблон конфигурации kubeadm.
+# Используется скриптом 01-init-control-plane.sh, который подставляет
+# значения вместо плейсхолдеров вида __NAME__ и передаёт файл в `kubeadm init`.
+#
+# Хранится отдельным файлом (а не heredoc внутри скрипта), чтобы конфигурация
+# была видна на code review.
+# =============================================================================
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  # IP-адрес этого узла. Подставляется скриптом.
+  advertiseAddress: "__ADVERTISE_ADDRESS__"
+  bindPort: 6443
+nodeRegistration:
+  # Явно перечисляем criSocket, чтобы не зависеть от автоопределения.
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: node-ip
+      value: "__ADVERTISE_ADDRESS__"
+  imagePullPolicy: IfNotPresent
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: __KUBERNETES_VERSION__
+clusterName: mtc-hackathon
+imageRepository: registry.k8s.io
+controlPlaneEndpoint: "__ADVERTISE_ADDRESS__:6443"
+apiServer:
+  extraArgs:
+    - name: authorization-mode
+      value: Node,RBAC
+  certSANs:
+    - "__ADVERTISE_ADDRESS__"
+    - "127.0.0.1"
+    - "localhost"
+controllerManager:
+  extraArgs:
+    # Только параметры, которых нет в дефолтах kubeadm.
+    # Флаги --allocate-node-cidrs=true и --cluster-cidr=<podSubnet> kubeadm
+    # проставляет САМ на основе networking.podSubnet (гарантирует согласованность
+    # значений между компонентами). Дублировать их здесь не нужно: в v1beta4
+    # extraArgs допускает повторы, но источником истины должен оставаться
+    # networking.podSubnet, иначе CIDR под'ов и Calico разойдутся.
+    - name: node-cidr-mask-size
+      value: "24"
+networking:
+  podSubnet: __POD_NETWORK_CIDR__
+  serviceSubnet: __SERVICE_SUBNET__
+  dnsDomain: cluster.local
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+# Rotate сертификатов кублета автоматически — хорошая практика надежности.
+rotateCertificates: true
+serverTLSBootstrap: true
+# По умолчанию kubelet допускает OOMKill в пределах лимита; оставляем строгий режим.
+failSwapOn: true
+# Сжимаем образы после загрузки — экономит диск на стенде.
+imageGCHighThresholdPercent: 85
+imageGCLowThresholdPercent: 80
+# Конфигурация для worker-узлов намеренно не хранится здесь: токен и хеш CA
+# генерируются на control-plane в момент добавления узла (см. 02-join-worker.sh).
