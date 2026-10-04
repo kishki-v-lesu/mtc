@@ -725,7 +725,7 @@ git ls-files -s hack/deploy.sh ci/lint.sh   # должно быть 100755
 ### 3. Публикация
 
 ```bash
-git remote add origin https://github.com/<user>/mtc-engineer-hack.git
+git remote add origin https://github.com/kishki-v-lesu/mtc.git
 git push -u origin main
 ```
 
