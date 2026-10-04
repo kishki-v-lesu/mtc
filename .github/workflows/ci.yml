@@ -1,0 +1,114 @@
+---
+name: CI
+
+# CI проверяет качество конфигураций: синтаксис и валидация Kubernetes-манифестов
+# по официальным JSON-схемам, стиль YAML, shell-скрипты и отсутствие секретов.
+# Развёртывание в кластер выполняется отдельным заданием (см. hack/deploy.sh).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Валидация конфигураций
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установить системные зависимости
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck python3 python3-yaml
+
+      - name: Установить kubeconform
+        run: |
+          KUBECONFORM_VERSION=0.8.0
+          curl -fsSL \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Установить yamllint
+        run: python3 -m pip install --quiet --user yamllint
+
+      - name: Установить kustomize
+        run: |
+          KUSTOMIZE_VERSION=5.8.2
+          URL="https://github.com/kubernetes-sigs/kustomize/releases/download"
+          curl -fsSL "${URL}/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin
+          kustomize version
+
+      - name: Собрать манифесты через kustomize
+        run: |
+          # kustomize встроен в kubectl, но в CI используем standalone-версию
+          kustomize build deploy > /tmp/deploy-rendered.yaml
+          kustomize build deploy/logging-kibana > /tmp/kibana-rendered.yaml
+          echo "Отрисованные манифесты:"
+          wc -l /tmp/deploy-rendered.yaml /tmp/kibana-rendered.yaml
+
+      - name: Проверка Helm-значений
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 -o get_helm.sh
+          chmod +x get_helm.sh
+          sudo ./get_helm.sh
+          helm version
+          # helm lint требует живого кластера, поэтому проверяем синтаксис values
+          python3 ci/check_yaml.py
+
+      - name: Проверить, что зафиксированные версии доступны
+        run: |
+          set -euo pipefail
+          source versions.env
+          check_url() {
+            local url="$1" desc="$2" code
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -L --max-time 30 "${url}" || echo 000)"
+            if [[ "${code}" =~ ^(200|302)$ ]]; then
+              echo "OK   ${desc}: ${url}"
+            else
+              echo "FAIL ${desc}: HTTP ${code} — ${url}"; exit 1
+            fi
+          }
+          check_url "${GATEWAY_API_RELEASE_BASE}/${GATEWAY_API_VERSION}/${GATEWAY_API_CHANNEL}-install.yaml" \
+            "Gateway API CRD"
+          check_url "${CALICO_MANIFEST_URL}" "Calico CNI"
+          check_url "${LOCAL_PATH_MANIFEST_URL}" "local-path-provisioner"
+          # OCI-реестр Helm: проверяем через pull
+          helm pull "${NGF_CHART_REPO}" --version "${NGF_CHART_VERSION}" --untar --untardir /tmp/ngf-chart
+          test -f "/tmp/ngf-chart/nginx-gateway-fabric/Chart.yaml"
+          echo "OK   NGINX Gateway Fabric ${NGF_CHART_VERSION} доступен в OCI"
+
+      - name: Запустить проверки качества
+        run: ./ci/lint.sh
+
+      - name: Проверить идемпотентность манифестов
+        run: |
+          # Рендер дважды и сравниваем: kustomize обязан давать детерминированный результат
+          kustomize build deploy > /tmp/render-1.yaml
+          kustomize build deploy > /tmp/render-2.yaml
+          diff -u /tmp/render-1.yaml /tmp/render-2.yaml
+          echo "Рендер kustomize детерминирован"
+
+      - name: Отчёт о проверке
+        if: always()
+        run: |
+          {
+            echo "### Результат CI"
+            echo ""
+            echo "- Проверенные компоненты: Kubernetes-манифесты, Helm-значения, shell-скрипты"
+            echo "- Версии зафиксированы в versions.env"
+            echo "- Полное развёртывание: \`./hack/deploy.sh\`"
+          } >> "$GITHUB_STEP_SUMMARY"

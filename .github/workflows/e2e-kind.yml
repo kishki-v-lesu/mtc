@@ -1,0 +1,122 @@
+---
+name: E2E (kind)
+
+# Сквозной тест: реально разворачивает решение в кластер и проверяет его
+# автоматическими проверками из hack/verify.sh.
+#
+# Отличие от продакшн-стенда: вместо kubeadm используется kind (одна нода).
+# CNI — Calico, тот же манифест, что и на kubeadm-кластере, поэтому
+# NetworkPolicy проверяются по-настоящему.
+#
+# Workflow запускается вручную или по расписанию, а не на каждый push:
+# полный прогон занимает ~15 минут и требует скачивания образов.
+on:
+  workflow_dispatch:
+  schedule:
+    # Каждую ночь по UTC, чтобы ловить изменения внешних образов
+    - cron: "37 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-kind
+  cancel-in-progress: true
+
+env:
+  KIND_VERSION: v0.33.0
+
+jobs:
+  e2e:
+    name: Развёртывание и проверка в kind
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установить зависимости
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck python3 python3-yaml jq curl conntrack socat
+
+      - name: Установить kind, kubectl, helm
+        run: |
+          set -euo pipefail
+          # kind
+          curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" \
+            | sudo install -m 0755 -o /usr/local/bin/kind /dev/stdin
+          # kubectl — версия из versions.env, чтобы тестировать то же, что разворачиваем
+          source versions.env
+          KV="${KUBERNETES_VERSION}"
+          curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/v${KV}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          # helm
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          kind version; kubectl version --client; helm version --short
+
+      - name: Создать кластер kind
+        run: |
+          set -euo pipefail
+          source versions.env
+          kind create cluster --name mtc-hack --wait 300s \
+            --image "kindest/node:v${KUBERNETES_VERSION}"
+
+      - name: Установить Calico (тот же манифест, что и на kubeadm)
+        run: |
+          set -euo pipefail
+          source versions.env
+          curl -fsSL --retry 5 -o /tmp/calico.yaml "${CALICO_MANIFEST_URL}"
+          kubectl apply -f /tmp/calico.yaml
+          kubectl -n kube-system rollout status daemonset/calico-node --timeout=600s
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+      - name: Установить local-path-provisioner
+        run: |
+          set -euo pipefail
+          source versions.env
+          curl -fsSL --retry 5 -o /tmp/lp.yaml "${LOCAL_PATH_MANIFEST_URL}"
+          kubectl apply -f /tmp/lp.yaml
+          kubectl -n local-path-storage rollout status deploy/local-path-provisioner --timeout=300s
+
+      - name: Развернуть решение
+        run: ./hack/deploy.sh --timeout 15m
+
+      - name: Автоматическая проверка всех требований
+        run: ./hack/verify.sh
+
+      - name: Smoke-тест под нагрузкой
+        run: ./hack/smoke-test.sh 200
+
+      - name: Собрать диагностику при сбое
+        if: failure()
+        run: |
+          echo "### Диагностика" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "#### Узлы"
+            kubectl get nodes -o wide || true
+            echo ""
+            echo "#### Pods"
+            kubectl get pods -A -o wide || true
+            echo ""
+            echo "#### Gateway"
+            kubectl get gatewayclass || true
+            kubectl -n nginx-gateway describe gateway web-gateway || true
+            echo ""
+            echo "#### Логи NGINX"
+            kubectl -n mtc-demo logs -l app.kubernetes.io/name=web -c nginx --tail=100 || true
+            echo ""
+            echo "#### Логи Filebeat"
+            kubectl -n mtc-demo logs -l app.kubernetes.io/name=web -c filebeat --tail=100 || true
+            echo ""
+            echo "#### Логи Elasticsearch"
+            kubectl -n mtc-demo logs deploy/elasticsearch --tail=100 || true
+            echo ""
+            echo "#### Логи NGINX Gateway Fabric"
+            kubectl -n nginx-gateway logs deploy/ngf-nginx-gateway-fabric --tail=100 || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Удалить кластер
+        if: always()
+        run: kind delete cluster --name mtc-hack || true

@@ -1,0 +1,36 @@
+# Секреты, генерируемые при развёртывании (пароль Grafana и т.п.)
+.secrets/
+
+# Служебные файлы kustomize
+deploy/**/kustomization.lock
+
+# Локальные переопределения версий для стенда
+versions.local.env
+
+# Kubernetes
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+
+# Helm
+charts/
+*.tgz
+*.tar.gz
+
+# Артефакты запуска
+*.log
+/tmp/
+
+# Редакторы и ОС
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Node/Python (на случай, если появятся вспомогательные скрипты)
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
